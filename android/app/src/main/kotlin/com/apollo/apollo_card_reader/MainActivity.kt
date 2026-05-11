@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
     private var transactionFlowController: TransactionFlowController? = null
     private var eventSink: EventChannel.EventSink? = null
     private var connectionTimestamp: Long = 0
+    private var transactionAmount: String = "10.00"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -33,7 +34,8 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startTransaction" -> {
-                    startTransaction()
+                    val amount = call.argument<String>("amount") ?: "10.00"
+                    startTransaction(amount)
                     result.success(null)
                 }
                 "stopTransaction" -> {
@@ -67,8 +69,9 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun startTransaction() {
+    private fun startTransaction(amount: String) {
         Log.d(TAG, "=== INICIANDO LECTURA DE TARJETA ===")
+        transactionAmount = amount
         transactionFlowController = TransactionFlowController.getControllerInstance(this, CardReaderDelegate())
         transactionFlowController?.connectController()
     }
@@ -120,15 +123,18 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "=== CONTROLADOR CONECTADO === (t=0ms)")
             sendEvent("connected", emptyMap<String, Any?>())
 
-            // Esperar estabilización del hardware y luego iniciar detección de tarjeta
+            // Esperar estabilización del hardware y luego iniciar flujo EMV
             Handler(Looper.getMainLooper()).postDelayed({
                 if (transactionFlowController != null) {
-                    Log.d(TAG, "=== Iniciando detección de tarjeta (solo chip/banda) === (+${elapsed()}ms)")
+                    Log.d(TAG, "=== Iniciando flujo de transacción EMV === (+${elapsed()}ms)")
                     val data = Hashtable<String, Any>().apply {
+                        put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+                        put(TransactionFlowController.AMOUNT, transactionAmount)
+                        put(TransactionFlowController.CURRENCYCODE, "0840")
                         put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
                         put(BaseCardController.CHKCRD_TIMEOUT, "60")
                     }
-                    transactionFlowController?.detectCardInteraction(data)
+                    transactionFlowController?.startTransactionFlow(data)
                 }
             }, 3000)
         }
@@ -169,12 +175,6 @@ class MainActivity : FlutterActivity() {
                 "result" to checkCardResult.toString(),
                 "data" to (hashtable?.toString() ?: "")
             ))
-
-            // Si se insertó chip, solicitar datos EMV
-            if (checkCardResult == BaseCardController.CheckCardResult.INSERTED_CARD) {
-                Log.d(TAG, "=== Tarjeta insertada - solicitando datos EMV ===")
-                transactionFlowController?.getEmvCardData()
-            }
         }
 
         override fun onCTLAudioToneReceived(contactlessStatusTone: BaseCardController.ContactlessStatusTone) {
