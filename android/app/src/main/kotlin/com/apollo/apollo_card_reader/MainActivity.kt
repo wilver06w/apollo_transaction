@@ -28,6 +28,9 @@ class MainActivity : FlutterActivity() {
     private var eventSink: EventChannel.EventSink? = null
     private var pendingAmount: String = "0.00"
     private var transactionStarted = false
+    private var connectionTimestamp: Long = 0
+    private var retryCount = 0
+    private val MAX_RETRIES = 3
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -72,9 +75,10 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startTransaction(amount: String) {
-        Log.d(TAG, "Iniciando transacción: $amount")
+        Log.d(TAG, "=== INICIANDO TRANSACCIÓN === Monto: $amount")
         pendingAmount = amount
         transactionStarted = false
+        retryCount = 0
 
         transactionFlowController = TransactionFlowController.getControllerInstance(this, TransactionDelegate())
         transactionFlowController?.connectController()
@@ -89,6 +93,23 @@ class MainActivity : FlutterActivity() {
             releaseControllerInstance()
         }
         transactionFlowController = null
+    }
+
+    private fun doStartTransactionFlow() {
+        transactionStarted = true
+        Log.d(TAG, "=== INICIANDO TRANSACTION FLOW === (intento ${retryCount + 1}) monto: $pendingAmount")
+
+        val data = Hashtable<String, Any>().apply {
+            put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
+            put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
+            put(TransactionFlowController.AMOUNT, pendingAmount)
+            put(TransactionFlowController.CASHBACKAMOUNT, "0")
+            put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+            put(TransactionFlowController.CURRENCYCODE, "0840")
+            put(TransactionFlowController.EMV_TXNNO, "000001")
+            put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
+        }
+        transactionFlowController?.startTransactionFlow(data)
     }
 
     private fun sendPin(pin: String?) {
@@ -123,28 +144,18 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onControllerConnected() {
-            Log.d(TAG, "Controlador conectado")
+            connectionTimestamp = System.currentTimeMillis()
+            Log.d(TAG, "=== CONTROLADOR CONECTADO === (t=0ms)")
             sendEvent("connected", emptyMap<String, Any?>())
 
-            // Esperar a que el hardware se estabilice antes de iniciar la transacción
+            // Esperar 3 segundos para que el hardware se estabilice
             Handler(Looper.getMainLooper()).postDelayed({
                 if (transactionFlowController != null && !transactionStarted) {
-                    transactionStarted = true
-                    Log.d(TAG, "Dispositivo estabilizado, iniciando transacción con monto: $pendingAmount")
-
-                    val data = Hashtable<String, Any>().apply {
-                        put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
-                        put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
-                        put(TransactionFlowController.AMOUNT, pendingAmount)
-                        put(TransactionFlowController.CASHBACKAMOUNT, "0")
-                        put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-                        put(TransactionFlowController.CURRENCYCODE, "0840")
-                        put(TransactionFlowController.EMV_TXNNO, "000001")
-                        put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
-                    }
-                    transactionFlowController?.startTransactionFlow(data)
+                    val elapsed = System.currentTimeMillis() - connectionTimestamp
+                    Log.d(TAG, "=== DELAY COMPLETADO === (${elapsed}ms tras conexión) - iniciando transaction flow")
+                    doStartTransactionFlow()
                 }
-            }, 2000)
+            }, 3000)
         }
 
         override fun onControllerDisconnected() {
@@ -158,12 +169,14 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onMessageReceived(messageText: ControllerMessage.MessageText) {
-            Log.d(TAG, "Mensaje: $messageText")
+            val elapsed = System.currentTimeMillis() - connectionTimestamp
+            Log.d(TAG, "=== MENSAJE: $messageText === (+${elapsed}ms)")
             sendEvent("message", mapOf("text" to messageText.toString()))
         }
 
         override fun onCardInteractionDetecting(checkCardMode: BaseCardController.CheckCardMode) {
-            Log.d(TAG, "Detectando tarjeta: $checkCardMode")
+            val elapsed = System.currentTimeMillis() - connectionTimestamp
+            Log.d(TAG, "=== DETECTANDO TARJETA: $checkCardMode === (+${elapsed}ms)")
             sendEvent("detecting", mapOf("mode" to checkCardMode.toString()))
         }
 
@@ -184,11 +197,24 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onCTLAudioToneReceived(contactlessStatusTone: BaseCardController.ContactlessStatusTone) {
-            Log.d(TAG, "Tono audio: $contactlessStatusTone")
+            val elapsed = System.currentTimeMillis() - connectionTimestamp
+            Log.d(TAG, "=== TONO AUDIO: $contactlessStatusTone === (+${elapsed}ms)")
         }
 
         override fun onCTLLightReceived(contactlessStatusLed: BaseCardController.ContactlessStatusLed) {
-            Log.d(TAG, "LED: $contactlessStatusLed")
+            val elapsed = System.currentTimeMillis() - connectionTimestamp
+            Log.d(TAG, "=== LED: $contactlessStatusLed === (+${elapsed}ms)")
+
+            // Si el dispositivo ahora está listo y la transacción fue terminada por NOT_READY, reintentar
+            if (contactlessStatusLed != BaseCardController.ContactlessStatusLed.NOT_READY
+                && !transactionStarted
+                && transactionFlowController != null
+                && retryCount < MAX_RETRIES
+            ) {
+                retryCount++
+                Log.d(TAG, "=== DISPOSITIVO LISTO - Reintentando transaction flow (intento $retryCount) ===")
+                doStartTransactionFlow()
+            }
         }
 
         override fun onPpSignalOutReceived(s: String) {
@@ -231,9 +257,19 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onTransactionStatusReceived(transactionResult: TransactionFlowController.TransactionResult) {
-            Log.d(TAG, "Estado de transacción: $transactionResult")
+            val elapsed = System.currentTimeMillis() - connectionTimestamp
+            Log.d(TAG, "=== ESTADO TRANSACCIÓN: $transactionResult === (+${elapsed}ms)")
             sendEvent("transactionStatus", mapOf("result" to transactionResult.toString()))
-            stopTransaction()
+
+            if (transactionResult == TransactionFlowController.TransactionResult.TERMINATED && retryCount < MAX_RETRIES) {
+                // No desconectar - esperar a onCTLLightReceived para reintentar
+                transactionStarted = false
+                Log.d(TAG, "=== TERMINATED - Esperando dispositivo listo para reintento ===")
+            } else {
+                // Transacción completada o máximo de reintentos alcanzado
+                Log.d(TAG, "=== Transacción finalizada - deteniendo ===")
+                stopTransaction()
+            }
         }
 
         override fun onPinEntryRequested(
