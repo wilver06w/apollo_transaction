@@ -24,7 +24,6 @@ class MainActivity : FlutterActivity() {
 
     private var transactionFlowController: TransactionFlowController? = null
     private var eventSink: EventChannel.EventSink? = null
-    private var pendingAmount: String = "0.00"
     private var connectionTimestamp: Long = 0
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -34,8 +33,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startTransaction" -> {
-                    val amount = call.argument<String>("amount") ?: "0.00"
-                    startTransaction(amount)
+                    startTransaction()
                     result.success(null)
                 }
                 "stopTransaction" -> {
@@ -69,39 +67,20 @@ class MainActivity : FlutterActivity() {
         )
     }
 
-    private fun startTransaction(amount: String) {
-        Log.d(TAG, "=== INICIANDO TRANSACCIÓN === Monto: $amount")
-        pendingAmount = amount
-
-        transactionFlowController = TransactionFlowController.getControllerInstance(this, TransactionDelegate())
+    private fun startTransaction() {
+        Log.d(TAG, "=== INICIANDO LECTURA DE TARJETA ===")
+        transactionFlowController = TransactionFlowController.getControllerInstance(this, CardReaderDelegate())
         transactionFlowController?.connectController()
     }
 
     private fun stopTransaction() {
-        Log.d(TAG, "=== DETENIENDO TRANSACCIÓN ===")
+        Log.d(TAG, "=== DETENIENDO LECTURA ===")
         transactionFlowController?.apply {
             abortDetection()
             disconnectController()
             releaseControllerInstance()
         }
         transactionFlowController = null
-    }
-
-    private fun doStartTransactionFlow() {
-        val elapsed = System.currentTimeMillis() - connectionTimestamp
-        Log.d(TAG, "=== INICIANDO TRANSACTION FLOW === Monto: $pendingAmount (+${elapsed}ms)")
-
-        val data = Hashtable<String, Any>().apply {
-            put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
-            put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
-            put(TransactionFlowController.AMOUNT, pendingAmount)
-            put(TransactionFlowController.CASHBACKAMOUNT, "0")
-            put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-            put(TransactionFlowController.CURRENCYCODE, "0840")
-            put(TransactionFlowController.EMV_TXNNO, "000001")
-            put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
-        }
-        transactionFlowController?.startTransactionFlow(data)
     }
 
     private fun sendPin(pin: String?) {
@@ -117,7 +96,7 @@ class MainActivity : FlutterActivity() {
         stopTransaction()
     }
 
-    inner class TransactionDelegate : TransactionFlowController.TransactionFlowDelegate {
+    inner class CardReaderDelegate : TransactionFlowController.TransactionFlowDelegate {
 
         private fun sendEvent(eventName: String, data: Map<String, Any?>) {
             runOnUiThread {
@@ -141,9 +120,17 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "=== CONTROLADOR CONECTADO === (t=0ms)")
             sendEvent("connected", emptyMap<String, Any?>())
 
-            // FASE 1: Pedir info del dispositivo para confirmar comunicación real con el hardware
-            Log.d(TAG, "=== Solicitando info del dispositivo... ===")
-            transactionFlowController?.getDeviceInfo()
+            // Esperar estabilización del hardware y luego iniciar detección de tarjeta
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (transactionFlowController != null) {
+                    Log.d(TAG, "=== Iniciando detección de tarjeta (solo chip/banda) === (+${elapsed()}ms)")
+                    val data = Hashtable<String, Any>().apply {
+                        put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
+                        put(BaseCardController.CHKCRD_TIMEOUT, 60)
+                    }
+                    transactionFlowController?.detectCardInteraction(data)
+                }
+            }, 3000)
         }
 
         override fun onControllerDisconnected() {
@@ -152,25 +139,9 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onDeviceInfoReceived(hashtable: Hashtable<String, String>) {
-            Log.d(TAG, "=== DEVICE INFO RECIBIDO === (+${elapsed()}ms)")
-            Log.d(TAG, "   Battery: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_BATTERYLEVEL]}")
-            Log.d(TAG, "   Serial: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_SERIALNUMBER]}")
-            Log.d(TAG, "   HW Ver: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_HWVERSION]}")
-            Log.d(TAG, "   FW Ver: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_FMVERSION]}")
-            Log.d(TAG, "   USB Connected: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_ISUSBCONNECTED]}")
-            Log.d(TAG, "   NFC Support: ${hashtable[com.spectratech.controllers.SPDeviceController.DI_ISSUPPORTNFC]}")
-            Log.d(TAG, "   Full info: $hashtable")
+            Log.d(TAG, "=== DEVICE INFO === (+${elapsed()}ms)")
+            Log.d(TAG, "   $hashtable")
             sendEvent("deviceInfo", mapOf("info" to hashtable.toString()))
-
-            // FASE 2: Hardware respondió. Esperar estabilización y luego iniciar transacción.
-            Log.d(TAG, "=== Hardware respondió. Esperando 3s para estabilización... ===")
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (transactionFlowController != null) {
-                    Log.d(TAG, "=== Estabilización completada. Resetando estado e iniciando... === (+${elapsed()}ms)")
-                    transactionFlowController?.resetTransactionState()
-                    doStartTransactionFlow()
-                }
-            }, 3000)
         }
 
         override fun onMessageReceived(messageText: ControllerMessage.MessageText) {
@@ -193,11 +164,17 @@ class MainActivity : FlutterActivity() {
             hashtable: Hashtable<String, String>?
         ) {
             Log.d(TAG, "=== TARJETA DETECTADA: $checkCardResult === (+${elapsed()}ms)")
-            Log.d(TAG, "   Data: $hashtable")
+            Log.d(TAG, "   Track data: $hashtable")
             sendEvent("cardDetected", mapOf(
                 "result" to checkCardResult.toString(),
                 "data" to (hashtable?.toString() ?: "")
             ))
+
+            // Si se insertó chip, solicitar datos EMV
+            if (checkCardResult == BaseCardController.CheckCardResult.INSERTED_CARD) {
+                Log.d(TAG, "=== Tarjeta insertada - solicitando datos EMV ===")
+                transactionFlowController?.getEmvCardData()
+            }
         }
 
         override fun onCTLAudioToneReceived(contactlessStatusTone: BaseCardController.ContactlessStatusTone) {
@@ -213,7 +190,7 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onSelectAIDRequested(arrayList: ArrayList<ArrayList<String>>) {
-            Log.d(TAG, "=== AID SELECCIONADO === (+${elapsed()}ms)")
+            Log.d(TAG, "=== AID SOLICITADO === (+${elapsed()}ms)")
             Log.d(TAG, "   AIDs disponibles: $arrayList")
             transactionFlowController?.selectAID(0)
         }
@@ -223,7 +200,6 @@ class MainActivity : FlutterActivity() {
             val data = BaseCardController.decodeTlv(s)
             val pan = data["5A"] ?: "Tag 5A no encontrado"
             Log.d(TAG, "   PAN: $pan")
-            Log.d(TAG, "   TLV: $s")
             sendEvent("confirmationRequested", mapOf(
                 "pan" to pan,
                 "tlv" to s
@@ -234,9 +210,6 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "=== PROCESO ONLINE SOLICITADO === (+${elapsed()}ms)")
             Log.d(TAG, "   Data: $s")
             sendEvent("onlineProcessRequested", mapOf("data" to s))
-            // Simular respuesta del host
-            val hostResp = "8A023030"
-            transactionFlowController?.sendOnlineProcessingData(hostResp)
         }
 
         override fun onBatchDataReceived(s: String) {
@@ -249,7 +222,6 @@ class MainActivity : FlutterActivity() {
 
         override fun onReversalDataReceived(s: String) {
             Log.d(TAG, "=== REVERSAL DATA === (+${elapsed()}ms)")
-            Log.d(TAG, "   Data: $s")
             sendEvent("reversalData", mapOf("data" to s))
         }
 
@@ -264,19 +236,17 @@ class MainActivity : FlutterActivity() {
             s: String
         ) {
             Log.d(TAG, "=== PIN SOLICITADO === fuente: $pinEntrySource (+${elapsed()}ms)")
-            val isOffline = pinEntrySource == TransactionFlowController.PinEntrySource.PEDDLL_OFFLINE
             sendEvent("pinEntryRequested", mapOf(
-                "isOffline" to isOffline,
                 "source" to pinEntrySource.toString()
             ))
         }
 
         override fun onEmvCardDataReceived(b: Boolean, s: String) {
-            Log.d(TAG, "=== DATOS EMV === success=$b (+${elapsed()}ms)")
+            Log.d(TAG, "=== DATOS EMV RECIBIDOS === success=$b (+${elapsed()}ms)")
             val data = BaseCardController.decodeTlv(s)
             val pan = data["5A"] ?: "Tag 5A no encontrado"
             Log.d(TAG, "   PAN: $pan")
-            Log.d(TAG, "   Data: $data")
+            Log.d(TAG, "   All tags: $data")
             sendEvent("emvCardData", mapOf(
                 "pan" to pan,
                 "data" to data.toString()
@@ -290,8 +260,7 @@ class MainActivity : FlutterActivity() {
         }
 
         override fun onSetAmountRequest(s: String) {
-            Log.d(TAG, "=== SET AMOUNT REQUEST === (+${elapsed()}ms)")
-            Log.d(TAG, "   Amount: $s")
+            Log.d(TAG, "=== SET AMOUNT REQUEST === $s (+${elapsed()}ms)")
             sendEvent("setAmountRequest", mapOf("amount" to s))
         }
     }
