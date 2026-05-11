@@ -24,6 +24,8 @@ class MainActivity : FlutterActivity() {
 
     private var transactionFlowController: TransactionFlowController? = null
     private var eventSink: EventChannel.EventSink? = null
+    private var pendingAmount: String = "0.00"
+    private var transactionStarted = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -69,15 +71,16 @@ class MainActivity : FlutterActivity() {
 
     private fun startTransaction(amount: String) {
         Log.d(TAG, "Iniciando transacción: $amount")
+        pendingAmount = amount
+        transactionStarted = false
 
         transactionFlowController = TransactionFlowController.getControllerInstance(this, TransactionDelegate())
-        // enableDebugLog might not be available in this SDK version
-        // transactionFlowController?.enableDebugLog(true)
         transactionFlowController?.connectController()
     }
 
     private fun stopTransaction() {
         Log.d(TAG, "Deteniendo transacción")
+        transactionStarted = false
         transactionFlowController?.apply {
             abortDetection()
             disconnectController()
@@ -120,19 +123,7 @@ class MainActivity : FlutterActivity() {
         override fun onControllerConnected() {
             Log.d(TAG, "Controlador conectado")
             sendEvent("connected", emptyMap<String, Any?>())
-
-            // Iniciar lectura de tarjeta
-            val data = Hashtable<String, Any>().apply {
-                put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
-                put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
-                put(TransactionFlowController.AMOUNT, "10.00")
-                put(TransactionFlowController.CASHBACKAMOUNT, "0")
-                put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-                put(TransactionFlowController.CURRENCYCODE, "0840")
-                put(TransactionFlowController.EMV_TXNNO, "000001")
-                put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
-            }
-            transactionFlowController?.startTransactionFlow(data)
+            // No iniciar la transacción aquí. Esperar a que el dispositivo esté listo (onCTLLightReceived).
         }
 
         override fun onControllerDisconnected() {
@@ -177,6 +168,29 @@ class MainActivity : FlutterActivity() {
 
         override fun onCTLLightReceived(contactlessStatusLed: BaseCardController.ContactlessStatusLed) {
             Log.d(TAG, "LED: $contactlessStatusLed")
+            sendEvent("deviceReady", mapOf("status" to contactlessStatusLed.toString()))
+
+            if (contactlessStatusLed == BaseCardController.ContactlessStatusLed.NOT_READY) {
+                Log.d(TAG, "Dispositivo no listo, esperando...")
+                return
+            }
+
+            if (!transactionStarted) {
+                transactionStarted = true
+                Log.d(TAG, "Dispositivo listo, iniciando transacción con monto: $pendingAmount")
+
+                val data = Hashtable<String, Any>().apply {
+                    put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
+                    put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
+                    put(TransactionFlowController.AMOUNT, pendingAmount)
+                    put(TransactionFlowController.CASHBACKAMOUNT, "0")
+                    put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+                    put(TransactionFlowController.CURRENCYCODE, "0840")
+                    put(TransactionFlowController.EMV_TXNNO, "000001")
+                    put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
+                }
+                transactionFlowController?.startTransactionFlow(data)
+            }
         }
 
         override fun onPpSignalOutReceived(s: String) {
