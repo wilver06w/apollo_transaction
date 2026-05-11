@@ -126,7 +126,7 @@ class MainActivity : FlutterActivity() {
                     Log.d(TAG, "=== Iniciando detección de tarjeta (solo chip/banda) === (+${elapsed()}ms)")
                     val data = Hashtable<String, Any>().apply {
                         put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
-                        put(BaseCardController.CHKCRD_TIMEOUT, 60)
+                        put(BaseCardController.CHKCRD_TIMEOUT, "60")
                     }
                     transactionFlowController?.detectCardInteraction(data)
                 }
