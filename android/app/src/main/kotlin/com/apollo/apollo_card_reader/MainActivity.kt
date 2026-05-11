@@ -123,18 +123,15 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "=== CONTROLADOR CONECTADO === (t=0ms)")
             sendEvent("connected", emptyMap<String, Any?>())
 
-            // Esperar estabilización del hardware y luego iniciar flujo EMV
+            // Esperar estabilización del hardware y luego iniciar detección de tarjeta
             Handler(Looper.getMainLooper()).postDelayed({
                 if (transactionFlowController != null) {
-                    Log.d(TAG, "=== Iniciando flujo de transacción EMV === (+${elapsed()}ms)")
+                    Log.d(TAG, "=== Iniciando detección de tarjeta (fase 1) === (+${elapsed()}ms)")
                     val data = Hashtable<String, Any>().apply {
-                        put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-                        put(TransactionFlowController.AMOUNT, transactionAmount)
-                        put(TransactionFlowController.CURRENCYCODE, "0840")
                         put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
                         put(BaseCardController.CHKCRD_TIMEOUT, "60")
                     }
-                    transactionFlowController?.startTransactionFlow(data)
+                    transactionFlowController?.detectCardInteraction(data)
                 }
             }, 3000)
         }
@@ -175,6 +172,19 @@ class MainActivity : FlutterActivity() {
                 "result" to checkCardResult.toString(),
                 "data" to (hashtable?.toString() ?: "")
             ))
+
+            // Fase 2: Si se insertó chip, iniciar flujo EMV con tarjeta ya presente
+            if (checkCardResult == BaseCardController.CheckCardResult.INSERTED_CARD) {
+                Log.d(TAG, "=== Tarjeta insertada - iniciando flujo EMV (fase 2) ===")
+                val data = Hashtable<String, Any>().apply {
+                    put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+                    put(TransactionFlowController.AMOUNT, transactionAmount)
+                    put(TransactionFlowController.CURRENCYCODE, "0840")
+                    put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.INSERT)
+                    put(BaseCardController.CHKCRD_TIMEOUT, "60")
+                }
+                transactionFlowController?.startTransactionFlow(data)
+            }
         }
 
         override fun onCTLAudioToneReceived(contactlessStatusTone: BaseCardController.ContactlessStatusTone) {
