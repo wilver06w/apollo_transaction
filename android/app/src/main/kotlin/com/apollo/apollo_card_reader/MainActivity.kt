@@ -2,6 +2,8 @@ package com.apollo.apollo_card_reader
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -123,7 +125,26 @@ class MainActivity : FlutterActivity() {
         override fun onControllerConnected() {
             Log.d(TAG, "Controlador conectado")
             sendEvent("connected", emptyMap<String, Any?>())
-            // No iniciar la transacción aquí. Esperar a que el dispositivo esté listo (onCTLLightReceived).
+
+            // Esperar a que el hardware se estabilice antes de iniciar la transacción
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (transactionFlowController != null && !transactionStarted) {
+                    transactionStarted = true
+                    Log.d(TAG, "Dispositivo estabilizado, iniciando transacción con monto: $pendingAmount")
+
+                    val data = Hashtable<String, Any>().apply {
+                        put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
+                        put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
+                        put(TransactionFlowController.AMOUNT, pendingAmount)
+                        put(TransactionFlowController.CASHBACKAMOUNT, "0")
+                        put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+                        put(TransactionFlowController.CURRENCYCODE, "0840")
+                        put(TransactionFlowController.EMV_TXNNO, "000001")
+                        put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
+                    }
+                    transactionFlowController?.startTransactionFlow(data)
+                }
+            }, 2000)
         }
 
         override fun onControllerDisconnected() {
@@ -168,29 +189,6 @@ class MainActivity : FlutterActivity() {
 
         override fun onCTLLightReceived(contactlessStatusLed: BaseCardController.ContactlessStatusLed) {
             Log.d(TAG, "LED: $contactlessStatusLed")
-            sendEvent("deviceReady", mapOf("status" to contactlessStatusLed.toString()))
-
-            if (contactlessStatusLed == BaseCardController.ContactlessStatusLed.NOT_READY) {
-                Log.d(TAG, "Dispositivo no listo, esperando...")
-                return
-            }
-
-            if (!transactionStarted) {
-                transactionStarted = true
-                Log.d(TAG, "Dispositivo listo, iniciando transacción con monto: $pendingAmount")
-
-                val data = Hashtable<String, Any>().apply {
-                    put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
-                    put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
-                    put(TransactionFlowController.AMOUNT, pendingAmount)
-                    put(TransactionFlowController.CASHBACKAMOUNT, "0")
-                    put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-                    put(TransactionFlowController.CURRENCYCODE, "0840")
-                    put(TransactionFlowController.EMV_TXNNO, "000001")
-                    put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, TransactionFlowController.GenericStatus.FALSE)
-                }
-                transactionFlowController?.startTransactionFlow(data)
-            }
         }
 
         override fun onPpSignalOutReceived(s: String) {
