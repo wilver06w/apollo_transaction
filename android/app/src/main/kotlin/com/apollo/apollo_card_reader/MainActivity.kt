@@ -93,7 +93,7 @@ class MainActivity : FlutterActivity() {
 
         val data = Hashtable<String, Any>().apply {
             put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
-            put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT_OR_TAP)
+            put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
             put(TransactionFlowController.AMOUNT, pendingAmount)
             put(TransactionFlowController.CASHBACKAMOUNT, "0")
             put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
@@ -143,7 +143,7 @@ class MainActivity : FlutterActivity() {
 
             // FASE 1: Pedir info del dispositivo para confirmar comunicación real con el hardware
             Log.d(TAG, "=== Solicitando info del dispositivo... ===")
-            transactionFlowController?.deviceInfo
+            transactionFlowController?.getDeviceInfo()
         }
 
         override fun onControllerDisconnected() {
