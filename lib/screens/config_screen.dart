@@ -14,10 +14,10 @@ class _ConfigScreenState extends State<ConfigScreen> {
   static const eventChannel = EventChannel('com.apollo.cardreader/events');
 
   StreamSubscription? _eventSubscription;
-  List<String> _logs = [];
-  bool _isConfiguring = false;
-  String _status = 'Esperando inicio...';
-  bool _configCompleted = false;
+  final ValueNotifier<List<String>> _logs = ValueNotifier<List<String>>([]);
+  final ValueNotifier<bool> _isConfiguring = ValueNotifier<bool>(false);
+  final ValueNotifier<String> _status = ValueNotifier<String>('Esperando inicio...');
+  final ValueNotifier<bool> _configCompleted = ValueNotifier<bool>(false);
 
   @override
   void initState() {
@@ -28,71 +28,66 @@ class _ConfigScreenState extends State<ConfigScreen> {
   @override
   void dispose() {
     _eventSubscription?.cancel();
+    _logs.dispose();
+    _isConfiguring.dispose();
+    _status.dispose();
+    _configCompleted.dispose();
     super.dispose();
   }
 
   void _listenToEvents() {
     _eventSubscription = eventChannel.receiveBroadcastStream().listen(
       (dynamic event) {
-        _addLog('Evento: $event');
         if (event is Map) {
           final eventName = event['event'];
           _handleEvent(eventName, event['data']);
         }
       },
       onError: (dynamic error) {
-        _addLog('Error: $error');
-        setState(() => _status = 'Error');
+        _status.value = 'Error';
       },
     );
   }
 
   Future<void> _handleEvent(String? eventName, dynamic data) async {
-    setState(() {
-      switch (eventName) {
-        case 'configProgress':
-          _status = 'Configurando: ${data?['phase']}';
-          break;
-        case 'configSuccess':
-          _status = '¡Configuración completada!';
-          _configCompleted = true;
-          _isConfiguring = false;
-          _addLog('✅ Configuración EMV completada exitosamente');
-          _showSuccessDialog();
-          break;
-        case 'configError':
-          _status = 'Error en configuración';
-          _isConfiguring = false;
-          _addLog('❌ Error: ${data?['error']} - ${data?['message']}');
-          break;
-        default:
-          _status = 'Evento: $eventName';
-      }
-    });
+    switch (eventName) {
+      case 'configProgress':
+        _status.value = 'Configurando: ${data?['phase']}';
+        break;
+      case 'configSuccess':
+        _status.value = '¡Configuración completada!';
+        _configCompleted.value = true;
+        _isConfiguring.value = false;
+        _addLog('✅ Configuración EMV completada exitosamente');
+        _showSuccessDialog();
+        break;
+      case 'configError':
+        _status.value = 'Error en configuración';
+        _isConfiguring.value = false;
+        _addLog('❌ Error: ${data?['error']} - ${data?['message']}');
+        break;
+      default:
+        _status.value = 'Evento: $eventName';
+    }
   }
 
   void _addLog(String message) {
-    setState(() {
-      _logs.add('${DateTime.now().toLocal().toIso8601String().split('.')[0]} - $message');
-    });
+    final timestamp = DateTime.now().toLocal().toIso8601String().split('.')[0];
+    _logs.value = [..._logs.value, '$timestamp - $message'];
   }
 
   Future<void> _startConfiguration() async {
     try {
-      setState(() {
-        _isConfiguring = true;
-        _status = 'Iniciando configuración...';
-        _logs.clear();
-        _configCompleted = false;
-      });
+      _isConfiguring.value = true;
+      _status.value = 'Iniciando configuración...';
+      _logs.value = [];
+      _configCompleted.value = false;
       _addLog('Iniciando configuración EMV...');
       await configChannel.invokeMethod('configureEmv');
     } catch (e) {
       _addLog('Error al iniciar configuración: $e');
-      setState(() {
-        _status = 'Error al iniciar';
-        _isConfiguring = false;
-      });
+      _status.value = 'Error al iniciar';
+      _isConfiguring.value = false;
     }
   }
 
@@ -116,7 +111,7 @@ class _ConfigScreenState extends State<ConfigScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              Navigator.pop(context, true); // Volver a main con éxito
+              Navigator.pop(context, true);
             },
             child: const Text('Continuar a Transacciones'),
           ),
@@ -138,159 +133,185 @@ class _ConfigScreenState extends State<ConfigScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-            // Panel de estado
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: _configCompleted
-                    ? Colors.green.shade100
-                    : _isConfiguring
-                        ? Colors.orange.shade100
-                        : Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: _configCompleted
-                      ? Colors.green
-                      : _isConfiguring
-                          ? Colors.orange
-                          : Colors.grey,
-                  width: 2,
-                ),
-              ),
-              child: Column(
-                children: [
-                  Icon(
-                    _configCompleted
-                        ? Icons.check_circle
-                        : _isConfiguring
-                            ? Icons.settings
-                            : Icons.settings_suggest,
-                    size: 48,
-                    color: _configCompleted
-                        ? Colors.green
-                        : _isConfiguring
-                            ? Colors.orange
-                            : Colors.grey,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _status,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          color: _configCompleted
-                              ? Colors.green.shade900
-                              : _isConfiguring
-                                  ? Colors.orange.shade900
-                                  : Colors.grey.shade700,
-                          fontWeight: FontWeight.bold,
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                  if (_isConfiguring) ...[
-                    const SizedBox(height: 16),
-                    const CircularProgressIndicator(),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
+              ValueListenableBuilder<bool>(
+                valueListenable: _configCompleted,
+                builder: (context, configCompleted, _) {
+                  return ValueListenableBuilder<bool>(
+                    valueListenable: _isConfiguring,
+                    builder: (context, isConfiguring, _) {
+                      final bgColor = configCompleted
+                          ? Colors.green.shade100
+                          : isConfiguring
+                              ? Colors.orange.shade100
+                              : Colors.grey.shade200;
 
-            // Botón de configuración
-            ElevatedButton.icon(
-              onPressed: _isConfiguring ? null : _startConfiguration,
-              icon: const Icon(Icons.settings),
-              label: Text(_isConfiguring ? 'Configurando...' : 'Iniciar Configuración EMV'),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                backgroundColor: _configCompleted ? Colors.green : null,
-              ),
-            ),
-            const SizedBox(height: 16),
+                      final borderColor = configCompleted
+                          ? Colors.green
+                          : isConfiguring
+                              ? Colors.orange
+                              : Colors.grey;
 
-            // Instrucciones
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue.shade200),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Información',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue.shade900,
+                      return Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: bgColor,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: borderColor,
+                            width: 2,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'La configuración EMV debe realizarse solo una vez. '
-                    'El lector recordará la configuración incluso si la app se cierra.',
-                    style: TextStyle(fontSize: 12, color: Colors.blue.shade900),
-                  ),
-                ],
+                        child: Column(
+                          children: [
+                            Icon(
+                              configCompleted
+                                  ? Icons.check_circle
+                                  : isConfiguring
+                                      ? Icons.settings
+                                      : Icons.settings_suggest,
+                              size: 48,
+                              color: borderColor,
+                            ),
+                            const SizedBox(height: 8),
+                            ValueListenableBuilder<String>(
+                              valueListenable: _status,
+                              builder: (context, status, _) {
+                                return Text(
+                                  status,
+                                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                        color: configCompleted
+                                            ? Colors.green.shade900
+                                            : isConfiguring
+                                                ? Colors.orange.shade900
+                                                : Colors.grey.shade700,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                  textAlign: TextAlign.center,
+                                );
+                              },
+                            ),
+                            if (isConfiguring) ...[
+                              const SizedBox(height: 16),
+                              const CircularProgressIndicator(),
+                            ],
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
               ),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-            // Logs
-            SizedBox(
-              height: 300,
-              child: Container(
-                padding: const EdgeInsets.all(8),
+              ValueListenableBuilder<bool>(
+                valueListenable: _isConfiguring,
+                builder: (context, isConfiguring, _) {
+                  return ValueListenableBuilder<bool>(
+                    valueListenable: _configCompleted,
+                    builder: (context, configCompleted, _) {
+                      return ElevatedButton.icon(
+                        onPressed: isConfiguring ? null : _startConfiguration,
+                        icon: const Icon(Icons.settings),
+                        label: Text(isConfiguring ? 'Configurando...' : 'Iniciar Configuración EMV'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          backgroundColor: configCompleted ? Colors.green : null,
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+
+              Container(
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
+                  color: Colors.blue.shade50,
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
+                  border: Border.all(color: Colors.blue.shade200),
                 ),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          'Logs de Configuración',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        TextButton(
-                          onPressed: () => setState(() => _logs.clear()),
-                          child: const Text('Limpiar'),
+                        Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Información',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue.shade900,
+                            ),
+                          ),
                         ),
                       ],
                     ),
-                    const Divider(),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: _logs.length,
-                        itemBuilder: (context, index) {
-                          final log = _logs[index];
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Text(
-                              log,
-                              style: Theme.of(context).textTheme.bodySmall,
+                    const SizedBox(height: 8),
+                    Text(
+                      'La configuración EMV debe realizarse solo una vez. '
+                      'El lector recordará la configuración incluso si la app se cierra.',
+                      style: TextStyle(fontSize: 12, color: Colors.blue.shade900),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              SizedBox(
+                height: 300,
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Logs de Configuración',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          TextButton(
+                            onPressed: () => _logs.value = [],
+                            child: const Text('Limpiar'),
+                          ),
+                        ],
+                      ),
+                      const Divider(),
+                      ValueListenableBuilder<List<String>>(
+                        valueListenable: _logs,
+                        builder: (context, logs, _) {
+                          return Expanded(
+                            child: ListView.builder(
+                              itemCount: logs.length,
+                              itemBuilder: (context, index) {
+                                final log = logs[index];
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 2),
+                                  child: Text(
+                                    log,
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                );
+                              },
                             ),
                           );
                         },
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
         ),
       ),
     );

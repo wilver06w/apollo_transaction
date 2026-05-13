@@ -14,9 +14,9 @@ class _TransactionScreenState extends State<TransactionScreen> {
   static const eventChannel = EventChannel('com.apollo.cardreader/events');
 
   StreamSubscription? _eventSubscription;
-  List<String> _logs = [];
-  String _status = 'Desconectado';
-  bool _isReading = false;
+  final ValueNotifier<List<String>> _logs = ValueNotifier<List<String>>([]);
+  final ValueNotifier<String> _status = ValueNotifier<String>('Desconectado');
+  final ValueNotifier<bool> _isReading = ValueNotifier<bool>(false);
   final TextEditingController _amountController = TextEditingController(text: '10.00');
 
   @override
@@ -29,96 +29,90 @@ class _TransactionScreenState extends State<TransactionScreen> {
   void dispose() {
     _eventSubscription?.cancel();
     _amountController.dispose();
+    _logs.dispose();
+    _status.dispose();
+    _isReading.dispose();
     super.dispose();
   }
 
   void _listenToEvents() {
     _eventSubscription = eventChannel.receiveBroadcastStream().listen(
       (dynamic event) {
-        _addLog('Evento recibido: $event');
         if (event is Map) {
           final eventName = event['event'];
           _handleEvent(eventName, event['data']);
         }
       },
       onError: (dynamic error) {
-        _addLog('Error: $error');
-        setState(() => _status = 'Error');
+        _status.value = 'Error';
       },
     );
   }
 
   Future<void> _handleEvent(String? eventName, dynamic data) async {
-    setState(() {
-      switch (eventName) {
-        case 'connected':
-          _status = 'Conectado';
-          break;
-        case 'disconnected':
-          _status = 'Desconectado';
-          _isReading = false;
-          break;
-        case 'detecting':
-          _status = 'Detectando tarjeta...';
-          break;
-        case 'cardDetected':
-          _status = '¡Tarjeta detectada!';
-          _addLog('Resultado: ${data?['result']}');
-          if (data?.containsKey('data') == true) {
-            _addLog('Track data: ${data?['data']}');
-          }
-          break;
-        case 'confirmationRequested':
-          _status = 'Confirmación requerida';
-          _addLog('PAN: ${data?['pan']}');
-          _showConfirmationDialog(data?['pan'] ?? 'No disponible');
-          break;
-        case 'transactionStatus':
-          _status = 'Transacción: ${data?['result']}';
-          _isReading = false;
-          _addLog('Estado final: ${data?['result']}');
-          break;
-        case 'error':
-          _status = 'Error: ${data?['error']}';
-          _addLog('Error: ${data?['message']}');
-          _isReading = false;
-          break;
-        case 'emvCardData':
-          _status = 'Datos EMV recibidos';
-          if (data is Map && data.containsKey('pan')) {
-            _addLog('PAN: ${data['pan']}');
-            _addLog('Todos los datos: ${data['data']}');
-          }
-          break;
-        default:
-          _status = 'Evento: $eventName';
-      }
-    });
+    switch (eventName) {
+      case 'connected':
+        _status.value = 'Conectado';
+        break;
+      case 'disconnected':
+        _status.value = 'Desconectado';
+        _isReading.value = false;
+        break;
+      case 'detecting':
+        _status.value = 'Detectando tarjeta...';
+        break;
+      case 'cardDetected':
+        _status.value = '¡Tarjeta detectada!';
+        _addLog('Resultado: ${data?['result']}');
+        if (data?.containsKey('data') == true) {
+          _addLog('Track data: ${data?['data']}');
+        }
+        break;
+      case 'confirmationRequested':
+        _status.value = 'Confirmación requerida';
+        _addLog('PAN: ${data?['pan']}');
+        _showConfirmationDialog(data?['pan'] ?? 'No disponible');
+        break;
+      case 'transactionStatus':
+        _status.value = 'Transacción: ${data?['result']}';
+        _isReading.value = false;
+        _addLog('Estado final: ${data?['result']}');
+        break;
+      case 'error':
+        _status.value = 'Error: ${data?['error']}';
+        _addLog('Error: ${data?['message']}');
+        _isReading.value = false;
+        break;
+      case 'emvCardData':
+        _status.value = 'Datos EMV recibidos';
+        if (data is Map && data.containsKey('pan')) {
+          _addLog('PAN: ${data['pan']}');
+          _addLog('Todos los datos: ${data['data']}');
+        }
+        break;
+      default:
+        _status.value = 'Evento: $eventName';
+    }
   }
 
   void _addLog(String message) {
-    setState(() {
-      _logs.add('${DateTime.now().toLocal().toIso8601String().split('.')[0]} - $message');
-    });
+    final timestamp = DateTime.now().toLocal().toIso8601String().split('.')[0];
+    _logs.value = [..._logs.value, '$timestamp - $message'];
   }
 
   Future<void> _startTransaction() async {
     try {
-      setState(() {
-        _isReading = true;
-        _status = 'Iniciando...';
-        _logs.clear();
-      });
+      _isReading.value = true;
+      _status.value = 'Iniciando...';
+      _logs.value = [];
       _addLog('Iniciando transacción con monto: ${_amountController.text}');
       await transactionChannel.invokeMethod('startTransaction', {
         'amount': _amountController.text,
       });
     } catch (e) {
       _addLog('Error al iniciar: $e');
-      setState(() {
-        _status = 'Error al iniciar';
-        _isReading = false;
-      });
+      _status.value = 'Error al iniciar';
+      _isReading.value = false;
     }
   }
 
@@ -126,7 +120,7 @@ class _TransactionScreenState extends State<TransactionScreen> {
     try {
       await transactionChannel.invokeMethod('stopTransaction');
       _addLog('Transacción detenida');
-      setState(() => _isReading = false);
+      _isReading.value = false;
     } catch (e) {
       _addLog('Error al detener: $e');
     }
@@ -201,32 +195,40 @@ class _TransactionScreenState extends State<TransactionScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Estado
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: _isReading ? Colors.green.shade100 : Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                children: [
-                  Icon(
-                    Icons.credit_card,
-                    size: 48,
-                    color: _isReading ? Colors.green : Colors.grey,
+            ValueListenableBuilder<bool>(
+              valueListenable: _isReading,
+              builder: (context, isReading, _) {
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isReading ? Colors.green.shade100 : Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _status,
-                    style: Theme.of(context).textTheme.titleLarge,
-                    textAlign: TextAlign.center,
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.credit_card,
+                        size: 48,
+                        color: isReading ? Colors.green : Colors.grey,
+                      ),
+                      const SizedBox(height: 8),
+                      ValueListenableBuilder<String>(
+                        valueListenable: _status,
+                        builder: (context, status, _) {
+                          return Text(
+                            status,
+                            style: Theme.of(context).textTheme.titleLarge,
+                            textAlign: TextAlign.center,
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                );
+              },
             ),
             const SizedBox(height: 16),
 
-            // Monto
             TextField(
               controller: _amountController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -235,39 +237,42 @@ class _TransactionScreenState extends State<TransactionScreen> {
                 border: OutlineInputBorder(),
                 prefixText: '\$ ',
               ),
-              enabled: !_isReading,
+              enabled: !_isReading.value,
             ),
             const SizedBox(height: 16),
 
-            // Botones
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isReading ? null : _startTransaction,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
+            ValueListenableBuilder<bool>(
+              valueListenable: _isReading,
+              builder: (context, isReading, _) {
+                return Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: isReading ? null : _startTransaction,
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: Text(isReading ? 'Leyendo...' : 'Iniciar Lectura'),
+                      ),
                     ),
-                    child: Text(_isReading ? 'Leyendo...' : 'Iniciar Lectura'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isReading ? _stopTransaction : null,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: isReading ? _stopTransaction : null,
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Detener'),
+                      ),
                     ),
-                    child: const Text('Detener'),
-                  ),
-                ),
-              ],
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 16),
 
-            // Logs
             Expanded(
               child: Container(
                 padding: const EdgeInsets.all(8),
@@ -287,26 +292,31 @@ class _TransactionScreenState extends State<TransactionScreen> {
                           style: Theme.of(context).textTheme.titleSmall,
                         ),
                         TextButton(
-                          onPressed: () => setState(() => _logs.clear()),
+                          onPressed: () => _logs.value = [],
                           child: const Text('Limpiar'),
                         ),
                       ],
                     ),
                     const Divider(),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: _logs.length,
-                        itemBuilder: (context, index) {
-                          final log = _logs[index];
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Text(
-                              log,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          );
-                        },
-                      ),
+                    ValueListenableBuilder<List<String>>(
+                      valueListenable: _logs,
+                      builder: (context, logs, _) {
+                        return Expanded(
+                          child: ListView.builder(
+                            itemCount: logs.length,
+                            itemBuilder: (context, index) {
+                              final log = logs[index];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 2),
+                                child: Text(
+                                  log,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              );
+                            },
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
