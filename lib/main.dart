@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'screens/config_screen.dart';
+import 'screens/transaction_screen.dart';
 
 void main() {
   runApp(const ApolloCardReaderApp());
@@ -17,166 +19,94 @@ class ApolloCardReaderApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const CardReaderPage(),
+      home: const MainScreen(),
     );
   }
 }
 
-class CardReaderPage extends StatefulWidget {
-  const CardReaderPage({super.key});
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
 
   @override
-  State<CardReaderPage> createState() => _CardReaderPageState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-class _CardReaderPageState extends State<CardReaderPage> {
-  static const platform = MethodChannel('com.apollo.cardreader/payment');
-  static const eventChannel = EventChannel('com.apollo.cardreader/events');
-
-  StreamSubscription? _eventSubscription;
-  List<String> _logs = [];
-  String _status = 'Desconectado';
-  bool _isReading = false;
-  final TextEditingController _amountController = TextEditingController(text: '10.00');
+class _MainScreenState extends State<MainScreen> {
+  bool _emvConfigured = false;
 
   @override
   void initState() {
     super.initState();
-    _listenToEvents();
+    _checkEmvConfiguration();
   }
 
-  @override
-  void dispose() {
-    _eventSubscription?.cancel();
-    _amountController.dispose();
-    super.dispose();
+  Future<void> _checkEmvConfiguration() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _emvConfigured = prefs.getBool('emv_configured') ?? false;
+    });
   }
 
-  void _listenToEvents() {
-    _eventSubscription = eventChannel.receiveBroadcastStream().listen(
-      (dynamic event) {
-        _addLog('Evento recibido: $event');
-        if (event is Map) {
-          final eventName = event['event'];
-          _handleEvent(eventName, event['data']);
-        }
-      },
-      onError: (dynamic error) {
-        _addLog('Error: $error');
-        setState(() => _status = 'Error');
-      },
+  Future<void> _navigateToConfig() async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (context) => const ConfigScreen()),
     );
-  }
 
-  void _handleEvent(String? eventName, dynamic data) {
-    setState(() {
-      switch (eventName) {
-        case 'connected':
-          _status = 'Conectado - Iniciando transacción';
-          break;
-        case 'disconnected':
-          _status = 'Desconectado';
-          _isReading = false;
-          break;
-        case 'detecting':
-          _status = 'Detectando tarjeta...';
-          break;
-        case 'cardDetected':
-          _status = '¡Tarjeta detectada!';
-          break;
-        case 'emvCardData':
-          _status = 'Datos EMV recibidos';
-          if (data is Map && data.containsKey('pan')) {
-            _addLog('PAN: ${data['pan']}');
+    if (result == true) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('emv_configured', true);
+      setState(() => _emvConfigured = true);
+
+      // Mostrar indicador de carga mientras el SDK procesa
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                const Text('Procesando configuración EMV...'),
+                const SizedBox(height: 8),
+                const Text('Por favor espere', style: TextStyle(fontSize: 12)),
+              ],
+            ),
+          ),
+        );
+
+        // Esperar 3 segundos para que el SDK procese la configuración
+        await Future.delayed(const Duration(seconds: 3));
+
+        if (mounted) {
+          Navigator.pop(context); // Cerrar diálogo
+          // Mostrar diálogo de éxito
+          if (mounted) {
+            showDialog(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('Configuración Lista'),
+                content: const Text('El lector está listo para procesar tarjetas chip.'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+            );
           }
-          break;
-        case 'confirmationRequested':
-          _status = 'Confirmación requerida';
-          _addLog('PAN: ${data?['pan']}');
-          _showConfirmationDialog();
-          break;
-        case 'transactionStatus':
-          _status = 'Transacción finalizada: ${data?['result']}';
-          _isReading = false;
-          break;
-        case 'error':
-          _status = 'Error: ${data?['error']}';
-          _addLog('Error: ${data?['message']}');
-          _isReading = false;
-          break;
-        default:
-          _status = 'Evento: $eventName';
+        }
       }
-    });
-  }
-
-  void _addLog(String message) {
-    setState(() {
-      _logs.add('${DateTime.now().toLocal().toIso8601String().split('.')[0]} - $message');
-    });
-  }
-
-  Future<void> _startTransaction() async {
-    try {
-      setState(() {
-        _isReading = true;
-        _status = 'Iniciando...';
-        _logs.clear();
-      });
-      _addLog('Iniciando transacción con monto: ${_amountController.text}');
-      await platform.invokeMethod('startTransaction', {
-        'amount': _amountController.text,
-      });
-    } catch (e) {
-      _addLog('Error al iniciar: $e');
-      setState(() {
-        _status = 'Error al iniciar';
-        _isReading = false;
-      });
     }
   }
 
-  Future<void> _stopTransaction() async {
-    try {
-      await platform.invokeMethod('stopTransaction');
-      _addLog('Transacción detenida');
-    } catch (e) {
-      _addLog('Error al detener: $e');
-    }
-  }
-
-  Future<void> _sendConfirmation() async {
-    try {
-      await platform.invokeMethod('sendConfirmation');
-      _addLog('Confirmación enviada');
-    } catch (e) {
-      _addLog('Error al enviar confirmación: $e');
-    }
-  }
-
-  void _showConfirmationDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Confirmar Transacción'),
-        content: const Text('¿Desea confirmar esta transacción?'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _stopTransaction();
-            },
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _sendConfirmation();
-            },
-            child: const Text('Confirmar'),
-          ),
-        ],
-      ),
+  void _navigateToTransactions() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const TransactionScreen()),
     );
   }
 
@@ -187,123 +117,147 @@ class _CardReaderPageState extends State<CardReaderPage> {
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         title: const Text('Apollo Card Reader'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Estado
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+            // Logo/Icono principal
+            Icon(
+              Icons.credit_card,
+              size: 100,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(height: 32),
+
+            // Título
+            Text(
+              'Apollo Card Reader',
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+
+            // Subtítulo
+            Text(
+              'Sistema de lectura de tarjetas EMV',
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: Colors.grey.shade600,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 48),
+
+            // Estado de configuración EMV
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: _isReading ? Colors.green.shade100 : Colors.grey.shade200,
+                color: _emvConfigured ? Colors.green.shade50 : Colors.orange.shade50,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: _emvConfigured ? Colors.green : Colors.orange,
+                  width: 2,
+                ),
               ),
               child: Column(
                 children: [
-                  Icon(
-                    Icons.credit_card,
-                    size: 48,
-                    color: _isReading ? Colors.green : Colors.grey,
+                  Row(
+                    children: [
+                      Icon(
+                        _emvConfigured ? Icons.check_circle : Icons.warning,
+                        color: _emvConfigured ? Colors.green : Colors.orange,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          _emvConfigured
+                              ? 'Configuración EMV: Completada'
+                              : 'Configuración EMV: Requerida',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: _emvConfigured
+                                ? Colors.green.shade900
+                                : Colors.orange.shade900,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (!_emvConfigured) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Debe configurar EMV antes de procesar tarjetas chip',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // Botón de configuración
+            ElevatedButton.icon(
+              onPressed: _navigateToConfig,
+              icon: const Icon(Icons.settings),
+              label: const Text('Configurar EMV'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                backgroundColor: _emvConfigured ? Colors.amber : Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Botón de transacciones
+            ElevatedButton.icon(
+              onPressed: _navigateToTransactions,
+              icon: const Icon(Icons.payment),
+              label: const Text('Ir a Transacciones'),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // Información adicional
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue.shade200),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue.shade700, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Instrucciones',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue.shade900,
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _status,
-                    style: Theme.of(context).textTheme.titleLarge,
-                    textAlign: TextAlign.center,
+                    '1. Presione "Configurar EMV" para configurar el lector la primera vez\n'
+                    '2. Presione "Ir a Transacciones" para procesar tarjetas\n'
+                    '3. La configuración se guarda en el lector, no es necesario repetirla',
+                    style: TextStyle(fontSize: 12, color: Colors.blue.shade900),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-
-            // Monto
-            TextField(
-              controller: _amountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'Monto de la transacción',
-                border: OutlineInputBorder(),
-                prefixText: '\$ ',
-              ),
-              enabled: !_isReading,
-            ),
-            const SizedBox(height: 16),
-
-            // Botones
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isReading ? null : _startTransaction,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                    child: Text(_isReading ? 'Leyendo...' : 'Iniciar Lectura'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isReading ? _stopTransaction : null,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                    child: const Text('Detener'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-
-            // Logs
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'Logs',
-                          style: Theme.of(context).textTheme.titleSmall,
-                        ),
-                        TextButton(
-                          onPressed: () => setState(() => _logs.clear()),
-                          child: const Text('Limpiar'),
-                        ),
-                      ],
-                    ),
-                    const Divider(),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: _logs.length,
-                        itemBuilder: (context, index) {
-                          final log = _logs[index];
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 2),
-                            child: Text(
-                              log,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

@@ -18,11 +18,13 @@ import java.util.Hashtable
 class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "ApolloCardReader"
-        private const val CHANNEL = "com.apollo.cardreader/payment"
         private const val EVENT_CHANNEL = "com.apollo.cardreader/events"
+        private const val CONFIG_CHANNEL = "com.apollo.cardreader/config"
+        private const val TRANSACTION_CHANNEL = "com.apollo.cardreader/transaction"
     }
 
     private var transactionFlowController: TransactionFlowController? = null
+    private var emvConfigManager: EmvConfigManager? = null
     private var eventSink: EventChannel.EventSink? = null
     private var connectionTimestamp: Long = 0
     private var transactionAmount: String = "10.00"
@@ -30,11 +32,24 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        // Method Channel
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+        // Config Channel - separado para ConfigurationController
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CONFIG_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "configureEmv" -> {
+                    Log.d(TAG, "=== RECIBIDO: configureEmv ===")
+                    configureEmv()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Transaction Channel - separado para TransactionFlowController
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, TRANSACTION_CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startTransaction" -> {
                     val amount = call.argument<String>("amount") ?: "10.00"
+                    Log.d(TAG, "=== RECIBIDO: startTransaction con monto $amount ===")
                     startTransaction(amount)
                     result.success(null)
                 }
@@ -42,20 +57,16 @@ class MainActivity : FlutterActivity() {
                     stopTransaction()
                     result.success(null)
                 }
-                "sendPin" -> {
-                    val pin = call.argument<String>("pin")
-                    sendPin(pin)
-                    result.success(null)
-                }
                 "sendConfirmation" -> {
-                    sendConfirmation(true)
+                    val confirmed = call.argument<Boolean>("confirmed") ?: true
+                    sendConfirmation(confirmed)
                     result.success(null)
                 }
                 else -> result.notImplemented()
             }
         }
 
-        // Event Channel
+        // Event Channel - compartido por ambos controladores
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL).setStreamHandler(
             object : EventChannel.StreamHandler {
                 override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
@@ -68,6 +79,52 @@ class MainActivity : FlutterActivity() {
             }
         )
     }
+
+    // ==================== CONFIGURATION CONTROLLER ====================
+
+    private fun configureEmv() {
+        Log.d(TAG, "=== INICIANDO CONFIGURACIÓN EMV ===")
+        emvConfigManager = EmvConfigManager(this, object : EmvConfigManager.EmvConfigCallback {
+            override fun onConfigProgress(phase: String, message: String) {
+                Log.d(TAG, "=== PROGRESO CONFIGURACIÓN: $phase - $message ===")
+                sendEvent("configProgress", mapOf(
+                    "phase" to phase,
+                    "message" to message
+                ))
+            }
+
+            override fun onConfigSuccess() {
+                Log.d(TAG, "=== CONFIGURACIÓN EMV COMPLETADA ===")
+                sendEvent("configSuccess", emptyMap())
+
+                // Dar tiempo al SDK para procesar y guardar la configuración EMV
+                Handler(Looper.getMainLooper()).postDelayed({
+                    Log.d(TAG, "=== Liberando ConfigurationController después de delay ===")
+                    // Importante: detener y liberar el ConfigurationController ANTES de null
+                    emvConfigManager?.stopConfiguration()
+                    emvConfigManager = null
+                }, 2000) // 2 segundos para que la configuración se asiente
+            }
+
+            override fun onConfigError(error: String, message: String) {
+                Log.e(TAG, "=== ERROR CONFIGURACIÓN EMV: $error - $message ===")
+                sendEvent("configError", mapOf(
+                    "error" to error,
+                    "message" to message
+                ))
+                emvConfigManager?.stopConfiguration()
+                emvConfigManager = null
+            }
+        })
+        emvConfigManager?.startConfiguration()
+    }
+
+    private fun stopEmvConfiguration() {
+        emvConfigManager?.stopConfiguration()
+        emvConfigManager = null
+    }
+
+    // ==================== TRANSACTION FLOW CONTROLLER ====================
 
     private fun startTransaction(amount: String) {
         Log.d(TAG, "=== INICIANDO LECTURA DE TARJETA ===")
@@ -86,27 +143,31 @@ class MainActivity : FlutterActivity() {
         transactionFlowController = null
     }
 
-    private fun sendPin(pin: String?) {
-        transactionFlowController?.sendPinEntry(pin)
-    }
-
     private fun sendConfirmation(confirmed: Boolean) {
         transactionFlowController?.sendConfirmation(confirmed)
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        stopTransaction()
+    // ==================== EVENTOS ====================
+
+    private fun sendEvent(eventName: String, data: Map<String, Any?>) {
+        runOnUiThread {
+            val eventData = mapOf("event" to eventName, "data" to data)
+            eventSink?.success(eventData)
+        }
     }
 
-    inner class CardReaderDelegate : TransactionFlowController.TransactionFlowDelegate {
+    // ==================== LIFECYCLE ====================
 
-        private fun sendEvent(eventName: String, data: Map<String, Any?>) {
-            runOnUiThread {
-                val eventData = mapOf("event" to eventName, "data" to data)
-                eventSink?.success(eventData)
-            }
-        }
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "=== onDestroy - deteniendo todos los controladores ===")
+        stopTransaction()
+        stopEmvConfiguration()
+    }
+
+    // ==================== TRANSACTION FLOW DELEGATE ====================
+
+    inner class CardReaderDelegate : TransactionFlowController.TransactionFlowDelegate {
 
         private fun elapsed(): Long = System.currentTimeMillis() - connectionTimestamp
 
@@ -123,15 +184,33 @@ class MainActivity : FlutterActivity() {
             Log.d(TAG, "=== CONTROLADOR CONECTADO === (t=0ms)")
             sendEvent("connected", emptyMap<String, Any?>())
 
-            // Esperar estabilización del hardware y luego iniciar detección de tarjeta
+            // Esperar estabilización del hardware y luego iniciar flujo EMV directamente
+            // Siguiendo el patrón de SpectraTech demo: llamar startTransactionFlow() directamente
+            // con EMV_OPTION.START en lugar de detectCardInteraction() primero
             Handler(Looper.getMainLooper()).postDelayed({
                 if (transactionFlowController != null) {
-                    Log.d(TAG, "=== Iniciando detección de tarjeta (fase 1) === (+${elapsed()}ms)")
+                    Log.d(TAG, "=== Iniciando flujo de transacción EMV === (+${elapsed()}ms)")
+                    Log.d(TAG, "   Monto: $transactionAmount")
+
                     val data = Hashtable<String, Any>().apply {
-                        put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
-                        put(BaseCardController.CHKCRD_TIMEOUT, "60")
+                        put(TransactionFlowController.EMV_OPTION, TransactionFlowController.EmvOption.START)
+                        put(TransactionFlowController.CHKCRD_MODE, BaseCardController.CheckCardMode.SWIPE_OR_INSERT)
+                        put(TransactionFlowController.AMOUNT, transactionAmount)
+                        put(TransactionFlowController.CASHBACKAMOUNT, "0")
+                        put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
+                        put(TransactionFlowController.CURRENCYCODE, "0840")
+                        put(TransactionFlowController.EMV_TXNNO, "000001")
+                        put(TransactionFlowController.EMV_ISCLFINALCONFIRMATIONENABLE, false)
                     }
-                    transactionFlowController?.detectCardInteraction(data)
+
+                    Log.d(TAG, "=== Parámetros EMV ===")
+                    Log.d(TAG, "   EMV_OPTION: ${data[TransactionFlowController.EMV_OPTION]}")
+                    Log.d(TAG, "   CHKCRD_MODE: ${data[TransactionFlowController.CHKCRD_MODE]}")
+                    Log.d(TAG, "   TRANSACTIONTYPE: ${data[TransactionFlowController.TRANSACTIONTYPE]}")
+                    Log.d(TAG, "   CURRENCYCODE: ${data[TransactionFlowController.CURRENCYCODE]}")
+                    Log.d(TAG, "   EMV_TXNNO: ${data[TransactionFlowController.EMV_TXNNO]}")
+
+                    transactionFlowController?.startTransactionFlow(data)
                 }
             }, 3000)
         }
@@ -173,17 +252,21 @@ class MainActivity : FlutterActivity() {
                 "data" to (hashtable?.toString() ?: "")
             ))
 
-            // Fase 2: Si se insertó chip, iniciar flujo EMV con tarjeta ya presente
-            if (checkCardResult == BaseCardController.CheckCardResult.INSERTED_CARD) {
-                Log.d(TAG, "=== Tarjeta insertada - iniciando flujo EMV (fase 2) ===")
-                val data = Hashtable<String, Any>().apply {
-                    put(TransactionFlowController.TRANSACTIONTYPE, TransactionFlowController.TransactionType.GOODS)
-                    put(TransactionFlowController.AMOUNT, transactionAmount)
-                    put(TransactionFlowController.CURRENCYCODE, "0840")
-                    put(BaseCardController.CHKCRD_MODE, BaseCardController.CheckCardMode.INSERT)
-                    put(BaseCardController.CHKCRD_TIMEOUT, "60")
+            // Siguiendo el patrón de SpectraTech:
+            // - Para MSR (swipe), liberamos el controlador
+            // - Para chip (INSERTED_CARD), el flujo EMV ya fue iniciado por startTransactionFlow()
+            when (checkCardResult) {
+                BaseCardController.CheckCardResult.MSR -> {
+                    Log.d(TAG, "=== Tarjeta banda magnética detectada - liberando ===")
+                    stopTransaction()
                 }
-                transactionFlowController?.startTransactionFlow(data)
+                BaseCardController.CheckCardResult.INSERTED_CARD -> {
+                    Log.d(TAG, "=== Tarjeta chip detectada - flujo EMV en progreso ===")
+                    // El flujo EMV continúa automáticamente
+                }
+                else -> {
+                    Log.d(TAG, "=== Otro tipo de tarjeta: $checkCardResult ===")
+                }
             }
         }
 
